@@ -1,0 +1,374 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Invoice Generator — Vercel Static</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- jsPDF + autotable -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.23/jspdf.plugin.autotable.min.js"></script>
+  <!-- Firebase (compat SDK for quick setup) -->
+  <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-firestore-compat.js"></script>
+  <style>body{font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial}</style>
+</head>
+<body class="bg-gray-50 text-gray-800">
+  <div class="max-w-6xl mx-auto p-6">
+    <header class="mb-6">
+      <h1 class="text-2xl font-bold">Invoice Generator — Free static (Vercel)</hh1>
+      <p class="text-sm text-gray-600">Mobile-first, PDF export, client save, GST calc. Replace Firebase config and deploy to Vercel.</p>
+    </header>
+
+    <main class="grid grid-cols-1 md-grid-cols-2 gap-6">
+      <!-- Left: Form -->
+      <section class="bg-white p-4 rounded shadow">
+        <div class="flex items-center justify-between mb-3">
+          <h2 class="font-semibold">Create Invoice</h2>
+          <div id="authArea" class="text-sm"></div>
+        </div>
+
+        <div class="space-y-3">
+          <div class="grid grid-cols-2 gap-2">
+            <input id="invoiceNo" class="border p-2 rounded" placeholder="Invoice#" />
+            <input id="invoiceDate" type="date" class="border p-2 rounded" />
+          </div>
+
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            <input id="sellerName" class="border p-2 rounded" placeholder="Seller name" />
+            <input id="sellerGST" class="border p-2 rounded" placeholder="Seller GST (optional)" />
+          </div>
+          <textarea id="sellerAddr" class="border p-2 rounded" placeholder="Seller address"></textarea>
+
+          <hr />
+
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            <input id="buyerName" class="border p-2 rounded" placeholder="Buyer name" />
+            <input id="buyerGST" class="border p-2 rounded" placeholder="Buyer GST (optional)" />
+          </div>
+          <textarea id="buyerAddr" class="border p-2 rounded" placeholder="Buyer address"></textarea>
+
+          <div class="flex gap-2">
+            <select id="taxMode" class="border p-2 rounded w-full">
+              <option value="no">No GST</option>
+              <option value="intra">Intra-state (CGST+SGST)</option>
+              <option value="inter">Inter-state (IGST)</option>
+            </select>
+            <input id="gstPercent" type="number" value="18" class="w-28 border p-2 rounded" />
+          </div>
+
+          <hr />
+
+          <div>
+            <h3 class="font-medium">Items</h3>
+            <div id="items" class="space-y-2 mt-2"></div>
+            <button id="addItem" class="mt-2 px-3 py-1 bg-blue-600 text-white rounded">+ Add item</button>
+          </div>
+
+          <div class="flex justify-between items-center">
+            <div class="text-sm text-gray-600">Subtotal:</div>
+            <div id="subtotal" class="font-semibold">₹0</div>
+          </div>
+
+          <div class="flex gap-2">
+            <button id="calcBtn" class="px-3 py-2 bg-green-600 text-white rounded">Calculate</button>
+            <button id="saveInvoice" class="px-3 py-2 bg-indigo-600 text-white rounded">Save</button>
+            <button id="downloadPDF" class="px-3 py-2 bg-gray-800 text-white rounded">Download PDF</button>
+            <button id="whatsappShare" class="px-3 py-2 bg-emerald-500 text-white rounded">Share (WhatsApp)</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- Right: Saved clients + history -->
+      <section class="bg-white p-4 rounded shadow">
+        <h3 class="font-semibold mb-2">Saved Clients</h3>
+        <div id="clientsList" class="space-y-2 max-h-64 overflow-auto"></div>
+        <hr class="my-3" />
+        <h3 class="font-semibold mb-2">Recent Invoices</h3>
+        <div id="invoicesList" class="space-y-2 max-h-64 overflow-auto"></div>
+      </section>
+    </main>
+
+    <footer class="mt-6 text-sm text-gray-600">
+      Built for quick validation. Replace Firebase config and deploy to Vercel.
+    </footer>
+  </div>
+
+<script>
+// ====== REPLACE with your Firebase config ======
+const firebaseConfig = {
+  apiKey: "REPLACE_API_KEY",
+  authDomain: "REPLACE_AUTH_DOMAIN",
+  projectId: "REPLACE_PROJECT_ID",
+  storageBucket: "REPLACE_STORAGE_BUCKET",
+  messagingSenderId: "REPLACE_MESSAGING_SENDER_ID",
+  appId: "REPLACE_APP_ID"
+};
+// ==============================================
+
+firebase.initializeApp(firebaseConfig);
+const auth = firebase.auth();
+const db = firebase.firestore();
+
+function genInvoiceId(){
+  const d = new Date();
+  const s = d.toISOString().replace(/[^0-9]/g,'').slice(0,14);
+  return `INV-${s}`;
+}
+
+const invoiceNo = document.getElementById('invoiceNo');
+const invoiceDate = document.getElementById('invoiceDate');
+const sellerName = document.getElementById('sellerName');
+const sellerAddr = document.getElementById('sellerAddr');
+const sellerGST = document.getElementById('sellerGST');
+const buyerName = document.getElementById('buyerName');
+const buyerAddr = document.getElementById('buyerAddr');
+const buyerGST = document.getElementById('buyerGST');
+const taxMode = document.getElementById('taxMode');
+const gstPercent = document.getElementById('gstPercent');
+const itemsDiv = document.getElementById('items');
+const subtotalEl = document.getElementById('subtotal');
+const clientsList = document.getElementById('clientsList');
+const invoicesList = document.getElementById('invoicesList');
+
+invoiceDate.valueAsDate = new Date();
+invoiceNo.value = genInvoiceId();
+
+let items = [];
+function addItemRow(it={desc:'',qty:1,rate:0}){
+  const idx = items.length;
+  items.push(it);
+  const row = document.createElement('div');
+  row.className = 'grid grid-cols-12 gap-2 items-center';
+  row.innerHTML = `
+    <input data-idx="${idx}" data-field="desc" class="col-span-5 border p-2 rounded" placeholder="Description" value="${it.desc}" />
+    <input data-idx="${idx}" data-field="qty" type="number" class="col-span-2 border p-2 rounded" value="${it.qty}" />
+    <input data-idx="${idx}" data-field="rate" type="number" class="col-span-3 border p-2 rounded" value="${it.rate}" />
+    <div class="col-span-1 text-sm" data-idx="${idx}" data-field="line">₹0</div>
+    <button class="col-span-1 px-2 py-1 bg-red-500 text-white rounded" data-action="remove" data-idx="${idx}">X</button>
+  `;
+  itemsDiv.appendChild(row);
+}
+
+addItemRow();
+
+itemsDiv.addEventListener('input', (e)=>{
+  const el = e.target;
+  const idx = el.dataset.idx;
+  const field = el.dataset.field;
+  if(idx==null) return;
+  items[idx][field] = field==='desc'? el.value : Number(el.value);
+});
+
+itemsDiv.addEventListener('click', (e)=>{
+  if(e.target.dataset.action==='remove'){
+    const idx = Number(e.target.dataset.idx);
+    items[idx] = null;
+    itemsDiv.removeChild(e.target.closest('div'));
+    recalc();
+  }
+});
+
+document.getElementById('addItem').addEventListener('click',(ev)=>{ 
+  ev.preventDefault(); 
+  addItemRow(); 
+});
+
+function recalc(){
+  let sub=0;
+  items.forEach((it, i)=>{
+    if(!it) return;
+    const line = (Number(it.qty)||0)*(Number(it.rate)||0);
+    sub+=line;
+    const el = itemsDiv.querySelector(`[data-idx='${i}'][data-field='line']`);
+    if(el) el.innerText = '₹'+line;
+  });
+  subtotalEl.innerText = '₹'+sub;
+  return sub;
+}
+
+function calcTaxes(sub){
+  const gst = Number(gstPercent.value)||0;
+  const mode = taxMode.value;
+  if(mode==='no') return {cgst:0,sgst:0,igst:0,total:sub};
+  if(mode==='intra'){
+    const totalTax = sub * gst/100; 
+    const cgst = totalTax/2; 
+    const sgst = totalTax/2;
+    return {cgst,sgst,igst:0,total: sub+totalTax};
+  }
+  const totalTax = sub * gst/100;
+  return {cgst:0,sgst:0,igst:totalTax,total:sub+totalTax};
+}
+
+async function saveClient(name, addr, gst){
+  if(!name) return;
+  await db.collection('clients').doc(name).set({
+    name, addr, gst,
+    updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+  });
+}
+
+async function saveInvoiceToFirestore(payload){
+  const id = payload.invoiceNo;
+  await db.collection('invoices').doc(id).set(payload);
+  renderRecentInvoices();
+}
+
+async function renderClients(){
+  const snap = await db.collection('clients').orderBy('updatedAt','desc').limit(50).get();
+  clientsList.innerHTML='';
+  snap.forEach(d=>{
+    const c = d.data();
+    const el = document.createElement('div');
+    el.className='p-2 rounded border flex justify-between items-center';
+    el.innerHTML = `
+      <div>
+        <div class='font-medium'>${c.name}</div>
+        <div class='text-xs text-gray-600'>${c.gst||''}</div>
+      </div>
+      <button class='px-2 py-1 bg-blue-600 text-white rounded' data-name='${c.name}'>Use</button>
+    `;
+    el.querySelector('button').addEventListener('click',()=>{
+      buyerName.value=c.name; 
+      buyerAddr.value=c.addr||''; 
+      buyerGST.value=c.gst||'';
+    });
+    clientsList.appendChild(el);
+  });
+}
+
+async function renderRecentInvoices(){
+  const snap = await db.collection('invoices').orderBy('invoiceDate','desc').limit(50).get();
+  invoicesList.innerHTML='';
+  snap.forEach(d=>{
+    const inv = d.data();
+    const el = document.createElement('div');
+    el.className='p-2 rounded border flex justify-between items-center';
+    el.innerHTML = `
+      <div>
+        <div class='font-medium'>${inv.invoiceNo}</div>
+        <div class='text-xs text-gray-600'>${inv.buyerName} • ₹${inv.total}</div>
+      </div>
+      <button class='px-2 py-1 bg-gray-800 text-white rounded'>View</button>
+    `;
+    el.querySelector('button').addEventListener('click',()=>{ loadInvoice(inv); });
+    invoicesList.appendChild(el);
+  });
+}
+
+function loadInvoice(inv){
+  invoiceNo.value = inv.invoiceNo;
+  invoiceDate.value = new Date(inv.invoiceDate.seconds*1000)
+      .toISOString().slice(0,10);
+  sellerName.value = inv.sellerName; 
+  sellerAddr.value=inv.sellerAddr; 
+  sellerGST.value=inv.sellerGST;
+  buyerName.value = inv.buyerName; 
+  buyerAddr.value = inv.buyerAddr; 
+  buyerGST.value = inv.buyerGST;
+
+  items = [];
+  itemsDiv.innerHTML='';
+  inv.items.forEach(it=> addItemRow({
+    desc:it.desc, qty:it.qty, rate:it.rate
+  }));
+  recalc();
+}
+
+async function downloadPDF(){
+  const sub = recalc();
+  const taxes = calcTaxes(sub);
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({unit:'pt',format:'a4'});
+  doc.setFontSize(14);
+  doc.text(sellerName.value||'Seller',40,40);
+  doc.setFontSize(10);
+  doc.text((sellerAddr.value||''),40,55);
+  doc.text(`GST: ${sellerGST.value||''}`,40,75);
+  doc.text(`Invoice: ${invoiceNo.value}`,400,40);
+  doc.text(`Date: ${invoiceDate.value}`,400,55);
+
+  doc.autoTable({
+    startY:110,
+    head:[['Description','Qty','Rate','Amount']],
+    body: items.filter(Boolean).map(it=>[
+      it.desc, String(it.qty), String(it.rate), 
+      String((it.qty||0)*(it.rate||0))
+    ])
+  });
+  let finalY = doc.previousAutoTable.finalY || 130;
+  doc.text(`Subtotal: ₹${sub}`,400, finalY+20);
+  if(taxes.cgst) doc.text(`CGST: ₹${taxes.cgst.toFixed(2)}`,400, finalY+36);
+  if(taxes.sgst) doc.text(`SGST: ₹${taxes.sgst.toFixed(2)}`,400, finalY+52);
+  if(taxes.igst) doc.text(`IGST: ₹${taxes.igst.toFixed(2)}`,400, finalY+36);
+
+  doc.setFontSize(12);
+  doc.text(`TOTAL: ₹${taxes.total.toFixed(2)}`,40, finalY+80);
+
+  doc.save(invoiceNo.value + '.pdf');
+}
+
+function shareWhatsApp(){
+  const sub = recalc();
+  const taxes = calcTaxes(sub);
+  let text = `Invoice ${invoiceNo.value}%0ADate: ${invoiceDate.value}%0ABuyer: ${buyerName.value}%0AItems:%0A`;
+  items.filter(Boolean).forEach(it=> 
+    text += `${it.desc} x${it.qty} @${it.rate} = ₹${(it.qty||0)*(it.rate||0)}%0A`
+  );
+  text += `Subtotal: ₹${sub}%0ATotal: ₹${taxes.total.toFixed(2)}`;
+  const url = `https://wa.me/?text=${encodeURIComponent(text)}`;
+  window.open(url,'_blank');
+}
+
+document.getElementById('calcBtn').addEventListener('click',()=>{
+  recalc(); 
+  alert('Calculated');
+});
+document.getElementById('downloadPDF').addEventListener('click',()=> downloadPDF());
+document.getElementById('whatsappShare').addEventListener('click',()=> shareWhatsApp());
+
+document.getElementById('saveInvoice').addEventListener('click', async ()=>{
+  const sub = recalc();
+  const taxes = calcTaxes(sub);
+  const payload = {
+    invoiceNo: invoiceNo.value || genInvoiceId(),
+    invoiceDate: firebase.firestore.Timestamp.fromDate(new Date(invoiceDate.value)),
+    sellerName: sellerName.value,
+    sellerAddr: sellerAddr.value,
+    sellerGST: sellerGST.value,
+    buyerName: buyerName.value,
+    buyerAddr: buyerAddr.value,
+    buyerGST: buyerGST.value,
+    items: items.filter(Boolean),
+    subtotal: sub,
+    ...taxes,
+    total: taxes.total,
+    createdAt: firebase.firestore.FieldValue.serverTimestamp()
+  };
+  await saveClient(buyerName.value,buyerAddr.value,buyerGST.value);
+  await saveInvoiceToFirestore(payload);
+  alert('Saved');
+});
+
+async function initAuth(){
+  try{
+    await auth.signInAnonymously();
+    document.getElementById('authArea').innerHTML = 
+      '<span class="text-green-600">Signed in (anonymous)</span>';
+    renderClients(); 
+    renderRecentInvoices();
+  }catch(e){
+    document.getElementById('authArea').innerHTML = 
+      '<button id="signinBtn" class="px-2 py-1 bg-blue-600 text-white rounded">Sign in</button>';
+    document.getElementById('signinBtn')?.addEventListener('click',()=>{ 
+      auth.signInAnonymously(); 
+    });
+  }
+}
+initAuth();
+</script>
+
+</body>
+</html>
